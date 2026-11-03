@@ -1,0 +1,39 @@
+Metadata-Version: 2.4
+Name: cybersentinel
+Version: 0.1.0
+Summary: An advanced cybersecurity agent and subagents framework for vulnerability scanning and SAST.
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Security
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: rich>=13.0.0
+Requires-Dist: google-genai>=0.1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+
+# CyberSentinel 🛡️
+
+CyberSentinel is an advanced, modular cybersecurity agent and subagents framework designed to perform automated vulnerability scanning, static application security testing (SAST), infrastructure misconfiguration auditing, advanced web vulnerability assessment, and professional security reporting.
+
+## Features
+
+- **CyberSentinelMaster**: Intelligent orchestrator agent that coordinates multi-agent security assessments.
+- **CodeAuditAgent**: Scans source code and dependency files for hardcoded secrets, unsafe patterns, and known vulnerable dependencies.
+- **InfraScanAgent**: Audits Dockerfiles, Kubernetes manifests, and cloud configuration files for security misconfigurations.
+- **WebVulnScanAgent**: Performs advanced web vulnerability scanning (OWASP Top 10 SAST covering SQLi, XSS, SSRF, Path Traversal, weak JWT secrets, insecure CORS, and active/passive URL header & cookie audits).
+- **ReportAgent**: Generates comprehensive, scored security reports in Markdown and JSON formats with actionable remediation advice.
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+```bash
+cybersentinel scan <target_directory_or_url>
+```

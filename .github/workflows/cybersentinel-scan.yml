@@ -1,0 +1,71 @@
+name: CyberSentinel Security Scan & Continuous Mission
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  schedule:
+    # Run automated security audits daily at midnight UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target directory or file to scan"
+        required: true
+        default: "."
+      enable_ai:
+        description: "Enable Gemini AI remediation analysis (true/false)"
+        required: false
+        default: "false"
+
+jobs:
+  security-mission:
+    name: CyberSentinel Deep Scan & Test Mission
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run Pytest Test Suite with Coverage
+        run: |
+          pytest -v --cov=cybersentinel
+
+      - name: Run CyberSentinel Deep Security Scan & Audit
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          mkdir -p reports
+          TARGET="${{ github.event.inputs.target || '.' }}"
+          AI_FLAG="${{ github.event.inputs.enable_ai }}"
+          
+          echo "=================================================="
+          echo "🛡️ CyberSentinel Background Workflow Execution"
+          echo "Target: $TARGET"
+          echo "AI Remediation: $AI_FLAG"
+          echo "=================================================="
+          
+          if [ "$AI_FLAG" = "true" ]; then
+            cybersentinel scan "$TARGET" --output reports/github_scan_report.md --format md --ai
+          else
+            cybersentinel scan "$TARGET" --output reports/github_scan_report.md --format md
+          fi
+
+      - name: Archive Security Scan Reports & Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybersentinel-security-report-artifact
+          path: reports/
+          retention-days: 30
