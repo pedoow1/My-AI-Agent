@@ -6,8 +6,8 @@ on:
   pull_request:
     branches: [ "main", "master" ]
   schedule:
-    # Run automated security audits daily at midnight UTC
-    - cron: '0 0 * * *'
+    # Run automated security audits every hour
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       target:
