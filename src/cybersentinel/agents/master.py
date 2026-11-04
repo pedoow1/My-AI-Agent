@@ -16,19 +16,23 @@ class CyberSentinelMaster:
         self.ai_remediation_agent = AiRemediationAgent()
         self.report_agent = ReportAgent()
 
-    def scan(self, target: str, ai: bool = False) -> ScanResult:
+    def scan(self, target: str, ai: bool = False, active: bool = False) -> ScanResult:
         all_findings: List[Finding] = []
+        is_url = target.startswith(("http://", "https://"))
 
-        # 1. Run Code Audit Agent
+        # 1. Run Code Audit Agent (no-op on a bare URL target: needs local source)
         code_findings = self.code_audit_agent.run(target, {})
         all_findings.extend(code_findings)
 
-        # 2. Run Infrastructure Scan Agent
+        # 2. Run Infrastructure Scan Agent (no-op on a bare URL target: needs local Dockerfile/K8s files)
         infra_findings = self.infra_scan_agent.run(target, {})
         all_findings.extend(infra_findings)
 
-        # 3. Run Web Vulnerability Scan Agent
-        web_findings = self.web_scan_agent.run(target, {})
+        # 3. Run Web Vulnerability Scan Agent. `active=True` makes it crawl
+        # same-origin pages/forms and inject SQLi/XSS test payloads instead of
+        # only auditing response headers/cookies — required to find
+        # CRITICAL/HIGH issues like SQLi on a live URL target.
+        web_findings = self.web_scan_agent.run(target, {"active": active})
         all_findings.extend(web_findings)
 
         # 4. Run SBOM Agent (Live CVE Intelligence)
@@ -50,12 +54,22 @@ class CyberSentinelMaster:
             scanned_agents.append(self.ai_remediation_agent.name)
 
         # 6. Construct ScanResult
+        metadata: Dict[str, Any] = {"scanned_agents": scanned_agents}
+        if is_url:
+            metadata["note"] = (
+                "Target is a URL: CodeAuditAgent, InfraScanAgent and SbomAgent need a local "
+                "checkout (source files, Dockerfiles/K8s manifests, dependency manifests) and "
+                "produced no findings for that reason, not because nothing was found."
+            )
+            if not active:
+                metadata["note"] += (
+                    " WebVulnScanAgent ran passive header/cookie checks only; pass --active "
+                    "to crawl pages/forms and test for SQLi/XSS."
+                )
         result = ScanResult(
             target=target,
             findings=all_findings,
-            metadata={
-                "scanned_agents": scanned_agents
-            }
+            metadata=metadata
         )
 
         return result
