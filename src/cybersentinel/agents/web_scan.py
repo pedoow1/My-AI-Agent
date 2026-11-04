@@ -1,10 +1,49 @@
 import os
 import re
+import random
+import string
 import urllib.request
 import urllib.error
-from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse, urljoin, parse_qs, urlencode, urlunparse
+from typing import List, Dict, Any, Optional, Tuple
 from .base import Agent
 from ..models import Finding, Severity
+
+# --- Active probing tuning (keep polite + bounded, even on a long mission) ---
+MAX_CRAWL_PAGES = 10
+MAX_FORMS_PER_PAGE = 5
+MAX_PARAMS_PER_TARGET = 8
+MAX_ACTIVE_REQUESTS = 80
+REQUEST_TIMEOUT = 8
+MAX_BODY_BYTES = 400_000
+
+SQLI_PAYLOADS = ["'", "' OR '1'='1"]
+
+# Common error-based SQLi signatures across major DB engines. This is a
+# well-known, publicly documented category of error strings (used by tools
+# like sqlmap/Nikto), reproduced here in our own minimal form for detection.
+SQL_ERROR_SIGNATURES = [
+    r"you have an error in your sql syntax",
+    r"warning:\s*mysql",
+    r"unclosed quotation mark after the character string",
+    r"quoted string not properly terminated",
+    r"sqlstate\[",
+    r"pg_query\(\)\s*:",
+    r"postgresql.*error",
+    r"ora-\d{5}",
+    r"microsoft (odbc|ole db|jet database)",
+    r"sqlite3\.(operationalerror|programmingerror)",
+    r"system\.data\.sqlclient",
+    r"syntax error.*near",
+]
+SQL_ERROR_RE = re.compile("|".join(SQL_ERROR_SIGNATURES), re.IGNORECASE)
+
+LINK_RE = re.compile(r'href=["\']([^"\'#][^"\']*)["\']', re.IGNORECASE)
+FORM_BLOCK_RE = re.compile(r'<form\b([^>]*)>(.*?)</form>', re.IGNORECASE | re.DOTALL)
+ACTION_RE = re.compile(r'action=["\']([^"\']*)["\']', re.IGNORECASE)
+METHOD_RE = re.compile(r'method=["\']([^"\']*)["\']', re.IGNORECASE)
+INPUT_NAME_RE = re.compile(r'<(?:input|textarea|select)\b[^>]*\bname=["\']([^"\']+)["\']', re.IGNORECASE)
+
 
 class WebVulnScanAgent(Agent):
     def __init__(self):
@@ -56,13 +95,16 @@ class WebVulnScanAgent(Agent):
             r"jwt\.verify\s*\([^)]*\b(?!algorithms)\b[^)]*\)",
             re.IGNORECASE
         )
+        self._request_budget = MAX_ACTIVE_REQUESTS
 
     def run(self, target: str, context: Dict[str, Any]) -> List[Finding]:
         findings: List[Finding] = []
+        active = bool(context.get("active"))
+        self._request_budget = MAX_ACTIVE_REQUESTS
 
         # Check if target is a URL
         if target.startswith(("http://", "https://")):
-            findings.extend(self._audit_url(target))
+            findings.extend(self._audit_url(target, active=active))
         elif os.path.exists(target):
             if os.path.isfile(target):
                 findings.extend(self._audit_file(target))
@@ -245,8 +287,9 @@ class WebVulnScanAgent(Agent):
 
         return findings
 
-    def _audit_url(self, url: str) -> List[Finding]:
+    def _audit_url(self, url: str, active: bool = False) -> List[Finding]:
         findings: List[Finding] = []
+        body = ""
         try:
             req = urllib.request.Request(
                 url,
@@ -254,6 +297,10 @@ class WebVulnScanAgent(Agent):
             )
             with urllib.request.urlopen(req, timeout=5) as response:
                 headers = {k.lower(): v for k, v in response.headers.items()}
+                try:
+                    body = response.read(MAX_BODY_BYTES).decode("utf-8", errors="ignore")
+                except Exception:
+                    body = ""
                 
                 # Check security headers
                 if "content-security-policy" not in headers:
@@ -402,5 +449,175 @@ class WebVulnScanAgent(Agent):
             pass
         except Exception:
             pass
+
+        if active:
+            findings.extend(self._active_probe(url, body))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Active probing: crawl same-origin pages/forms and inject lightweight,
+    # well-known test payloads to confirm SQLi/XSS rather than only
+    # checking response headers. Bounded by MAX_* constants so even a long
+    # mission stays polite to the target.
+    # ------------------------------------------------------------------
+
+    def _fetch(self, url: str, method: str = "GET", data: Optional[bytes] = None) -> Tuple[Optional[str], Optional[int]]:
+        if self._request_budget <= 0:
+            return None, None
+        self._request_budget -= 1
+        try:
+            req = urllib.request.Request(
+                url, data=data, method=method,
+                headers={"User-Agent": "CyberSentinel-WebVulnScanner/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                raw = resp.read(MAX_BODY_BYTES)
+                return raw.decode("utf-8", errors="ignore"), resp.status
+        except urllib.error.HTTPError as e:
+            try:
+                raw = e.read(MAX_BODY_BYTES)
+                return raw.decode("utf-8", errors="ignore"), e.code
+            except Exception:
+                return None, e.code
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _same_origin(base_url: str, candidate: str) -> bool:
+        b, c = urlparse(base_url), urlparse(candidate)
+        return c.scheme in ("http", "https") and c.netloc == b.netloc
+
+    def _extract_links(self, base_url: str, body: str) -> List[str]:
+        links = []
+        for m in LINK_RE.finditer(body or ""):
+            absolute = urljoin(base_url, m.group(1)).split("#")[0]
+            if self._same_origin(base_url, absolute) and absolute not in links:
+                links.append(absolute)
+        return links
+
+    @staticmethod
+    def _extract_forms(base_url: str, body: str) -> List[Dict[str, Any]]:
+        forms = []
+        for m in FORM_BLOCK_RE.finditer(body or ""):
+            attrs, inner = m.group(1), m.group(2)
+            action_m = ACTION_RE.search(attrs)
+            method_m = METHOD_RE.search(attrs)
+            action = urljoin(base_url, action_m.group(1)) if action_m else base_url
+            method = (method_m.group(1).lower() if method_m else "get")
+            names = list(dict.fromkeys(INPUT_NAME_RE.findall(inner)))  # de-dup, keep order
+            if names:
+                forms.append({"action": action, "method": method, "params": names[:MAX_PARAMS_PER_TARGET]})
+        return forms
+
+    @staticmethod
+    def _set_query_param(url: str, param: str, value: str) -> str:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        qs[param] = [value]
+        return urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
+
+    def _probe_reflection_and_sqli(self, send, param: str, marker: str) -> List[Finding]:
+        """send(payload) -> (body, status, locator). Shared GET/POST probe logic."""
+        findings: List[Finding] = []
+
+        for payload in SQLI_PAYLOADS:
+            body, status, locator = send(payload)
+            if body and SQL_ERROR_RE.search(body):
+                findings.append(Finding(
+                    id=f"WEB-ACTIVE-SQLI-{abs(hash((locator, param)))}",
+                    title="Confirmed SQL Injection (error-based)",
+                    severity=Severity.CRITICAL,
+                    agent=self.name,
+                    file_path=locator,
+                    description=(
+                        f"Injecting `{payload}` into parameter '{param}' triggered a database "
+                        f"error message in the response, confirming unsanitized input reaches a SQL query."
+                    ),
+                    remediation="Use parameterized queries / prepared statements for all queries built from this parameter. Never interpolate request input into SQL strings.",
+                    cvss_score=9.6,
+                    metadata={"parameter": param, "payload": payload}
+                ))
+                break  # one confirmed SQLi per parameter is enough evidence
+
+        xss_marker = f"<{marker}>"
+        body, status, locator = send(xss_marker)
+        if body and xss_marker in body:
+            findings.append(Finding(
+                id=f"WEB-ACTIVE-XSS-{abs(hash((locator, param)))}",
+                title="Confirmed Reflected Cross-Site Scripting (XSS)",
+                severity=Severity.HIGH,
+                agent=self.name,
+                file_path=locator,
+                description=(
+                    f"Parameter '{param}' is reflected back in the response unescaped: a literal "
+                    f"`{xss_marker}` marker survived round-trip, confirming the application does not "
+                    f"HTML-encode this input before rendering it."
+                ),
+                remediation="HTML-encode all user-supplied data before rendering it into HTML, or use an auto-escaping template engine / DOMPurify on the client.",
+                cvss_score=7.4,
+                metadata={"parameter": param}
+            ))
+
+        return findings
+
+    def _test_get_param(self, url: str, param: str, marker: str) -> List[Finding]:
+        def send(payload: str):
+            test_url = self._set_query_param(url, param, payload)
+            body, status = self._fetch(test_url)
+            return body, status, test_url
+        return self._probe_reflection_and_sqli(send, param, marker)
+
+    def _test_form_param(self, form: Dict[str, Any], param: str, marker: str) -> List[Finding]:
+        action, method = form["action"], form["method"]
+        other_params = [p for p in form["params"] if p != param]
+
+        def send(payload: str):
+            data = {p: "cybersentinel" for p in other_params}
+            data[param] = payload
+            if method == "post":
+                body, status = self._fetch(action, method="POST", data=urlencode(data).encode("utf-8"))
+            else:
+                test_url = urlunparse(urlparse(action)._replace(query=urlencode(data)))
+                body, status = self._fetch(test_url, method="GET")
+            return body, status, f"{action} [{method.upper()} form field '{param}']"
+        return self._probe_reflection_and_sqli(send, param, marker)
+
+    def _active_probe(self, base_url: str, base_body: str) -> List[Finding]:
+        findings: List[Finding] = []
+        marker = "zz" + "".join(random.choices(string.ascii_lowercase, k=6))
+        tested: set = set()
+
+        pages = [(base_url, base_body)]
+        seen = {base_url}
+        for link in self._extract_links(base_url, base_body):
+            if len(pages) >= MAX_CRAWL_PAGES or self._request_budget <= 0:
+                break
+            if link in seen:
+                continue
+            seen.add(link)
+            body, _ = self._fetch(link)
+            if body is not None:
+                pages.append((link, body))
+
+        for page_url, page_body in pages:
+            if self._request_budget <= 0:
+                break
+
+            parsed = urlparse(page_url)
+            for param in list(parse_qs(parsed.query).keys())[:MAX_PARAMS_PER_TARGET]:
+                key = ("q", parsed.path, param)
+                if key in tested or self._request_budget <= 0:
+                    continue
+                tested.add(key)
+                findings.extend(self._test_get_param(page_url, param, marker))
+
+            for form in self._extract_forms(page_url, page_body)[:MAX_FORMS_PER_PAGE]:
+                for param in form["params"]:
+                    key = ("f", form["action"], param)
+                    if key in tested or self._request_budget <= 0:
+                        continue
+                    tested.add(key)
+                    findings.extend(self._test_form_param(form, param, marker))
 
         return findings
