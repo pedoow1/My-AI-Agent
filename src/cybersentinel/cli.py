@@ -22,6 +22,7 @@ def main():
     scan_parser.add_argument("--output", "-o", help="Output report file path (supports .md or .json)")
     scan_parser.add_argument("--format", "-f", choices=["md", "json", "console"], default="console", help="Report format")
     scan_parser.add_argument("--ai", action="store_true", help="Enable Gemini AI remediation patch generation")
+    scan_parser.add_argument("--active", action="store_true", help="Enable active probing on URL targets: crawl same-origin pages/forms and inject SQLi/XSS test payloads. Only use against targets you own or are authorized to test.")
 
     # mission subcommand
     mission_parser = subparsers.add_parser("mission", help="Manage background tmux scanning missions")
@@ -84,9 +85,12 @@ def main():
     if args.command == "scan":
         console.print(f"[bold cyan]🛡️ CyberSentinel[/bold cyan] initiating security assessment on target: [yellow]{args.target}[/yellow]\n")
         
+        if args.active and args.target.startswith(("http://", "https://")):
+            console.print("[bold yellow]⚠ Active probing enabled: will inject SQLi/XSS test payloads into this target's pages and forms. Only do this against systems you own or are authorized to test.[/bold yellow]\n")
+
         master = CyberSentinelMaster()
         with console.status("[bold green]Executing security subagents (CodeAuditAgent, InfraScanAgent, AiRemediationAgent)..."):
-            result = master.scan(args.target, ai=args.ai)
+            result = master.scan(args.target, ai=args.ai, active=args.active)
 
         report_agent = ReportAgent()
 
