@@ -22,6 +22,27 @@ pip install -e .
 cybersentinel scan <target_directory_or_url>
 ```
 
+### Scanning a live URL
+
+Against a bare URL, `CodeAuditAgent`, `InfraScanAgent` and `SbomAgent` produce
+**no findings by design** — they need a local checkout (source files,
+Dockerfiles/K8s manifests, dependency manifests) that a URL doesn't give them.
+By default `WebVulnScanAgent` only audits the response's security headers and
+cookies on a URL target, so it can only ever report LOW/MEDIUM findings.
+
+To actually test for SQLi/XSS on a live URL (confirmable CRITICAL/HIGH
+findings), pass `--active`:
+
+```bash
+cybersentinel scan http://testaspnet.vulnweb.com --active
+```
+
+`--active` crawls same-origin pages and forms (bounded, polite request
+budget) and injects well-known SQLi/XSS test payloads, confirming a finding
+only when it sees a real database error or an unescaped reflection — it does
+not just guess. **Only use `--active` against targets you own or are
+explicitly authorized to test.**
+
 ### Background Scanning Missions (Tmux)
 
 CyberSentinel supports running long-running scans in the background using `tmux` sessions. This allows you to disconnect from your terminal without interrupting the scan.
@@ -57,4 +78,3 @@ CyberSentinel includes a built-in GitHub Actions workflow (`.github/workflows/cy
 #### Important Note on GitHub Codespaces:
 - **Terminal Disconnection**: `tmux` successfully keeps your scan running if you close your browser tab, lose internet connection, or disconnect your SSH/terminal session, as long as the Codespace container remains running.
 - **Codespace Inactivity Timeout**: If your GitHub Codespace stops due to inactivity (default inactivity timeout is typically 30 minutes), the entire container shuts down. When the container stops, active `tmux` sessions and their running processes are terminated. To run very long missions, ensure your Codespace stays active or use keep-alive tooling.
-
