@@ -118,8 +118,10 @@ CyberSentinel is a multi-agent cybersecurity framework:
 - **CyberSentinelMaster**: Orchestrates the multi-agent scanning pipeline.
 - **CodeAuditAgent**: SAST, hardcoded secrets, unsafe constructs (`eval`, `shell=True`).
 - **InfraScanAgent**: Dockerfile and Kubernetes misconfiguration auditing.
-- **WebVulnScanAgent**: OWASP Top 10 (SQLi, XSS, SSRF, Path Traversal, weak JWT secrets,
-  insecure CORS) plus HTTP header / cookie audits and iterative endpoint probing.
+- **WebVulnScanAgent**: static regex checks (SQLi, XSS, SSRF, Path Traversal, weak JWT
+  secrets, insecure CORS) on local source files; on a URL target, passive HTTP header /
+  cookie audit always, and with `--active`, real crawling of same-origin pages/forms
+  with SQLi/XSS test payloads — only `--active` can confirm CRITICAL/HIGH on a live URL.
 - **SbomAgent**: Live dependency vulnerability analysis via OSV.dev.
 - **AiRemediationAgent**: Gemini-powered remediation, grounded with live Google Search.
 - **ReportAgent**: Markdown and JSON risk-scored reports.
