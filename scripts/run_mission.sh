@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # CyberSentinel Background Mission Runner
 # Runs a CyberSentinel scan inside a detached tmux session with persistent logging.
+#
+# Usage: ./run_mission.sh <target> [extra cybersentinel flags...]
+# Example (URL target, confirm real SQLi/XSS instead of only header checks):
+#   ./run_mission.sh http://testaspnet.vulnweb.com --active
+# Only use --active against targets you own or are authorized to test.
 
 TARGET="${1:-.}"
+shift || true
+EXTRA_ARGS="$@"  # e.g. pass --active to enable live SQLi/XSS probing on a URL target
 REPORT_DIR="reports"
 LOG_FILE="$REPORT_DIR/mission_output.log"
 SESSION_NAME="cybersentinel-mission"
@@ -33,7 +40,7 @@ echo "Logs will be written to: $LOG_FILE"
 echo "Report will be saved to: $REPORT_FILE"
 
 # Start detached tmux session running the scan and teeing output to log file
-tmux new-session -d -s "$SESSION_NAME" "python3 -m cybersentinel.cli scan \"$TARGET\" --output \"$REPORT_FILE\" --format md 2>&1 | tee \"$LOG_FILE\""
+tmux new-session -d -s "$SESSION_NAME" "python3 -m cybersentinel.cli scan \"$TARGET\" --output \"$REPORT_FILE\" --format md $EXTRA_ARGS 2>&1 | tee \"$LOG_FILE\""
 
 echo "Mission started in tmux session '$SESSION_NAME'."
 echo "To reattach to the session, run: tmux attach -t $SESSION_NAME"
