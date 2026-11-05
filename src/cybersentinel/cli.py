@@ -30,6 +30,7 @@ def main():
 
     start_parser = mission_subparsers.add_parser("start", help="Start a background scanning mission in tmux")
     start_parser.add_argument("target", nargs="?", default=".", help="Path to file or directory to scan")
+    start_parser.add_argument("--active", action="store_true", help="Enable active SQLi/XSS probing on a URL target. Only use against targets you own or are authorized to test.")
 
     mission_subparsers.add_parser("status", help="Check status of background tmux mission session")
     mission_subparsers.add_parser("logs", help="Tail persistent background mission logs")
@@ -49,7 +50,10 @@ def main():
         if action == "start":
             script_path = os.path.join(os.getcwd(), "scripts", "run_mission.sh")
             if os.path.exists(script_path):
-                subprocess.run(["bash", script_path, args.target])
+                cmd = ["bash", script_path, args.target]
+                if args.active:
+                    cmd.append("--active")
+                subprocess.run(cmd)
             else:
                 console.print(f"[bold red]❌ Mission runner script not found at {script_path}[/bold red]")
                 sys.exit(1)
